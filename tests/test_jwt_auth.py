@@ -100,6 +100,18 @@ class JwtAuthApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["user"]["username"], "operator")
 
+    def test_create_user_cli_prompts_for_omitted_password(self):
+        runner = self.app.test_cli_runner()
+        result = runner.invoke(
+            args=["create-user", "cli-user", "--role", "administrator"],
+            input="cli-password\ncli-password\n",
+        )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        user = User.query.filter_by(username="cli-user").first()
+        self.assertIsNotNone(user)
+        self.assertTrue(user.check_password("cli-password"))
+
     def test_invalid_credentials_are_generic(self):
         response = self.client.post(
             "/auth/login",
