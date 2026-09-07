@@ -101,6 +101,7 @@ def create_app(config_class: type = Config) -> Flask:
     from app.routes.api import api_bp
     from app.routes.auth import auth_bp
     from app.routes.traps import traps_bp
+    from app.routes.users import users_bp
     from app.routes.deployments import deployments_bp
     from app.routes.trackers import trackers_bp
     from app.routes.uplinks import uplinks_bp
@@ -111,6 +112,7 @@ def create_app(config_class: type = Config) -> Flask:
     app.register_blueprint(api_bp)
     app.register_blueprint(auth_bp)
     app.register_blueprint(traps_bp)
+    app.register_blueprint(users_bp)
     app.register_blueprint(deployments_bp)
     app.register_blueprint(trackers_bp)
     app.register_blueprint(uplinks_bp)

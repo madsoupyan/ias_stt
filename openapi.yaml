@@ -23,6 +23,8 @@ tags:
     description: Public service health checks
   - name: Auth
     description: Local-user JWT authentication
+  - name: Users
+    description: Administrator-only local-user management
   - name: Telemetry
     description: Decoded GPS tracker payload ingest (ChirpStack HTTP integration)
   - name: Uplinks
@@ -140,6 +142,133 @@ paths:
       responses:
         204:
           description: Tokens may be discarded by the client
+
+  /api/users:
+    get:
+      tags: [Users]
+      summary: List local users
+      operationId: listUsers
+      parameters:
+        - $ref: '#/components/parameters/limit'
+        - $ref: '#/components/parameters/offset'
+        - name: search
+          in: query
+          schema: { type: string }
+          description: Search username, display name, or email
+      responses:
+        200:
+          description: Users array
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/User' }
+        401:
+          $ref: '#/components/responses/401'
+        403:
+          $ref: '#/components/responses/403'
+        422:
+          $ref: '#/components/responses/422'
+
+    post:
+      tags: [Users]
+      summary: Create a local user
+      operationId: createUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserCreate'
+      responses:
+        201:
+          description: User created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        401:
+          $ref: '#/components/responses/401'
+        403:
+          $ref: '#/components/responses/403'
+        409:
+          $ref: '#/components/responses/409'
+        422:
+          $ref: '#/components/responses/422'
+
+  /api/users/{user_id}:
+    parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema: { type: integer }
+    get:
+      tags: [Users]
+      summary: Get a local user
+      operationId: getUser
+      responses:
+        200:
+          description: User found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        401:
+          $ref: '#/components/responses/401'
+        403:
+          $ref: '#/components/responses/403'
+        404:
+          $ref: '#/components/responses/404'
+
+    put:
+      tags: [Users]
+      summary: Update a local user
+      operationId: updateUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserUpdate'
+      responses:
+        200:
+          description: User updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        401:
+          $ref: '#/components/responses/401'
+        403:
+          $ref: '#/components/responses/403'
+        404:
+          $ref: '#/components/responses/404'
+        409:
+          $ref: '#/components/responses/409'
+        422:
+          $ref: '#/components/responses/422'
+
+    delete:
+      tags: [Users]
+      summary: Delete a local user
+      operationId: deleteUser
+      responses:
+        200:
+          description: User deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+        401:
+          $ref: '#/components/responses/401'
+        403:
+          $ref: '#/components/responses/403'
+        404:
+          $ref: '#/components/responses/404'
+        409:
+          $ref: '#/components/responses/409'
 
   /api/auth/verify:
     get:
@@ -812,6 +941,44 @@ components:
         user: { $ref: '#/components/schemas/AuthUser' }
         expires_at: { type: string, format: date-time }
 
+    User:
+      type: object
+      properties:
+        id: { type: integer, readOnly: true }
+        username: { type: string, maxLength: 150, readOnly: true }
+        display_name: { type: string, maxLength: 255, nullable: true }
+        email: { type: string, maxLength: 255, nullable: true }
+        role:
+          type: string
+          enum: [administrator, field_operator, read_only]
+        is_active: { type: boolean }
+        created_at: { type: string, format: date-time, readOnly: true }
+        updated_at: { type: string, format: date-time, readOnly: true }
+
+    UserCreate:
+      type: object
+      required: [username, password, role]
+      properties:
+        username: { type: string, maxLength: 150 }
+        password: { type: string, format: password, minLength: 8, writeOnly: true }
+        display_name: { type: string, maxLength: 255, nullable: true }
+        email: { type: string, maxLength: 255, nullable: true }
+        role:
+          type: string
+          enum: [administrator, field_operator, read_only]
+        is_active: { type: boolean, default: true }
+
+    UserUpdate:
+      type: object
+      properties:
+        password: { type: string, format: password, minLength: 8, writeOnly: true }
+        display_name: { type: string, maxLength: 255, nullable: true }
+        email: { type: string, maxLength: 255, nullable: true }
+        role:
+          type: string
+          enum: [administrator, field_operator, read_only]
+        is_active: { type: boolean }
+
     Health:
       type: object
       properties:
@@ -1017,6 +1184,16 @@ components:
             error:
               code: FORBIDDEN
               message: You do not have permission to perform this action.
+    422:
+      description: Validation error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: VALIDATION_ERROR
+              message: Field 'password' must be at least 8 characters
     404:
       description: Resource not found
       content:

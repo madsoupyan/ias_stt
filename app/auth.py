@@ -218,6 +218,28 @@ def require_permission(permission):
     return decorator
 
 
+def require_user_permission(permission):
+    """Require a permission from an authenticated user, not a service key."""
+
+    def decorator(view):
+        @wraps(view)
+        def wrapper(*args, **kwargs):
+            principal, error = _authenticate_request(allow_service=False)
+            if error is not None:
+                return error
+            if permission not in principal["permissions"]:
+                return auth_error(
+                    "FORBIDDEN",
+                    "You do not have permission to perform this action.",
+                    403,
+                )
+            return view(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
 def require_api_key(view):
     """Require the legacy API key for service-only endpoints."""
 

@@ -40,13 +40,16 @@ web UI for managing traps.
 │   ├── config.py              # env-based config
 │   ├── auth.py                # JWT auth, permissions, and service-key helpers
 │   ├── routes/
+│   │   ├── auth.py             # JWT login, refresh, me, and logout
 │   │   ├── api.py             # Hello World (/) + /api/auth/verify
 │   │   ├── traps.py           # CRUD API (/api/traps)
+│   │   ├── users.py           # Administrator-only local-user CRUD API
 │   │   ├── uplinks.py         # Uplink history API (/api/uplinks)
 │   │   └── frontend.py        # legacy web UI routes (/traps, /login)
 │   ├── models/
 │   │   ├── database.py        # shared SQLAlchemy instance
 │   │   ├── trap.py            # Trap model
+│   │   ├── user.py            # Local JWT user model
 │   │   └── tracker_uplink.py  # Persisted tracker uplink history
 │   ├── services/
 │   │   └── mqtt_service.py    # MQTT client + init_mqtt(app)
@@ -442,6 +445,47 @@ client must discard both tokens.
 **Public (no auth required):** `/`, `/api/health`, `/auth/login`, and
 `/auth/logout`. Protected API requests require a valid JWT unless they use the
 explicitly configured legacy service API key.
+
+## Local User Management API
+
+Local users can be managed by an authenticated administrator through
+`/api/users`. These endpoints require an administrator JWT and do not accept the
+legacy service API key.
+
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/api/users` | List users. Supports `limit`, `offset`, and `search`. |
+| GET | `/api/users/<id>` | Get one user. |
+| POST | `/api/users` | Create a user. |
+| PUT | `/api/users/<id>` | Update profile, role, password, or active state. |
+| DELETE | `/api/users/<id>` | Delete a user. |
+
+Example create request:
+
+```http
+POST /api/users
+Authorization: Bearer <ADMIN_ACCESS_TOKEN>
+Content-Type: application/json
+```
+
+```json
+{
+  "username": "operator",
+  "password": "operator-password",
+  "display_name": "Field Operator",
+  "email": "operator@example.com",
+  "role": "field_operator",
+  "is_active": true
+}
+```
+
+Passwords must be at least eight characters. Password hashes are never returned
+by the API. Usernames cannot be changed after creation. The API prevents an
+administrator from deleting, deactivating, or demoting the last active
+administrator, and administrators cannot delete or demote their own account.
+
+Because JWTs are stateless, role or active-state changes affect newly issued
+access tokens. Existing access tokens remain valid until their normal expiry.
 
 ## Security
 
