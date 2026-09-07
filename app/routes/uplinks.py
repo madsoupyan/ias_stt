@@ -1,7 +1,7 @@
 """Historical tracker uplink API endpoints."""
 from flask import Blueprint, jsonify, request
 
-from app.auth import require_api_key
+from app.auth import require_permission
 from app.models.database import db
 from app.models.smart_trap_tracker import SmartTrapTracker
 from app.models.tracker_uplink import TrackerUplink
@@ -36,7 +36,7 @@ def _query_with_tracker_name():
 
 
 @uplinks_bp.route("", methods=["GET"])
-@require_api_key
+@require_permission("uplinks:read")
 def list_uplinks():
     limit, offset = _parse_pagination()
     if limit is None:
@@ -65,7 +65,7 @@ def list_uplinks():
 
 
 @uplinks_bp.route("/<int:uplink_id>", methods=["GET"])
-@require_api_key
+@require_permission("uplinks:read")
 def get_uplink(uplink_id):
     row = (
         _query_with_tracker_name()

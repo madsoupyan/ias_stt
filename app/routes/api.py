@@ -5,7 +5,7 @@ from app.models.server_configuration import server_configuration
 from flask import Blueprint, current_app, jsonify, request, redirect
 from sqlalchemy import select
 
-from app.auth import require_api_key
+from app.auth import require_api_key, require_permission
 from app.models.database import get_engine
 from app.models.trap import Trap
 from app.models.database import db 
@@ -62,7 +62,7 @@ def verify():
 
 
 @api_bp.route("/api/dashboard_map", methods=["GET"])
-@require_api_key
+@require_permission("traps:read")
 def dashboard_map():
     try:
         limit = int(request.args.get("limit", 100))

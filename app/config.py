@@ -1,6 +1,7 @@
 """Application configuration loaded from environment variables."""
 import os
 import uuid
+from datetime import timedelta
 try:
     from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 except ImportError:
@@ -44,6 +45,11 @@ def _parse_topics(raw: str) -> list:
     return topics
 
 
+def _parse_csv(raw: str, default: str = "") -> list:
+    value = raw if raw is not None else default
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
 def _env_timezone(name: str, default: str) -> str:
     value = os.getenv(name, default).strip()
     try:
@@ -75,6 +81,20 @@ class Config:
 
     # Security
     API_KEY = _env_optional("API_KEY")
+    JWT_SECRET_KEY = _env_optional("JWT_SECRET_KEY")
+    JWT_TOKEN_LOCATION = ("headers",)
+    JWT_HEADER_NAME = "Authorization"
+    JWT_HEADER_TYPE = "Bearer"
+    JWT_ACCESS_TOKEN_EXPIRES = timedelta(
+        minutes=int(os.getenv("JWT_ACCESS_TOKEN_MINUTES", "15"))
+    )
+    JWT_REFRESH_TOKEN_EXPIRES = timedelta(
+        days=int(os.getenv("JWT_REFRESH_TOKEN_DAYS", "7"))
+    )
+    API_KEY_PERMISSIONS = _parse_csv(
+        os.getenv("API_KEY_PERMISSIONS"),
+        default="*",
+    )
 
     # Database (SQLite, file-based)
     SQLALCHEMY_DATABASE_URI = os.getenv(

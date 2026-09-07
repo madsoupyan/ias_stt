@@ -6,8 +6,10 @@ info:
     Trap management service with deployment tracking, location
     history, and photo upload. Telemetry is ingested from the
     ChirpStack HTTP integration via `POST /api/telemetry/ingest`
-    (an optional MQTT listener remains available). All `/api/*`
-    endpoints require a Bearer token (`API_KEY` from the environment).
+    (an optional MQTT listener remains available). Application users obtain
+    JWT access and refresh tokens from `/auth/login` and send access tokens in
+    the `Authorization` header. A legacy API key remains available for service
+    integrations.
 
 servers:
   - url: http://localhost:8080
@@ -20,7 +22,7 @@ tags:
   - name: Health
     description: Public service health checks
   - name: Auth
-    description: API key verification
+    description: Local-user JWT authentication
   - name: Telemetry
     description: Decoded GPS tracker payload ingest (ChirpStack HTTP integration)
   - name: Uplinks
@@ -67,6 +69,78 @@ paths:
                 status: ok
 
   # -- Auth ------------------------------------------------------------------
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Authenticate a local user
+      operationId: login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string, format: password }
+      responses:
+        200:
+          description: Access and refresh tokens
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        401:
+          $ref: '#/components/responses/401'
+        403:
+          $ref: '#/components/responses/403'
+
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Get the current authenticated user
+      operationId: currentUser
+      responses:
+        200:
+          description: Current user and permissions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthMeResponse'
+        401:
+          $ref: '#/components/responses/401'
+
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Exchange a refresh token for an access token
+      operationId: refreshToken
+      responses:
+        200:
+          description: New access token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token: { type: string }
+                  token_type: { type: string, example: Bearer }
+                  expires_in: { type: integer, example: 900 }
+        401:
+          $ref: '#/components/responses/401'
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: End the client JWT session
+      operationId: logout
+      security: []
+      responses:
+        204:
+          description: Tokens may be discarded by the client
+
   /api/auth/verify:
     get:
       tags: [Auth]
@@ -521,6 +595,32 @@ paths:
         404:
           $ref: '#/components/responses/404'
 
+  /api/deployments/{deployment_id}/photos/{photo_id}:
+    parameters:
+      - name: deployment_id
+        in: path
+        required: true
+        schema: { type: integer }
+      - name: photo_id
+        in: path
+        required: true
+        schema: { type: integer }
+    get:
+      tags: [Deployments]
+      summary: Retrieve an authenticated deployment photo
+      operationId: getDeploymentPhoto
+      responses:
+        200:
+          description: Image bytes
+          content:
+            image/jpeg: {}
+            image/png: {}
+            image/gif: {}
+        401:
+          $ref: '#/components/responses/401'
+        404:
+          $ref: '#/components/responses/404'
+
   /api/deployments/{deployment_id}/locations:
     parameters:
       - name: deployment_id
@@ -647,8 +747,9 @@ components:
       type: http
       scheme: bearer
       description: |
-        Set the `API_KEY` environment variable on the server.
-        Pass it as: `Authorization: Bearer <your-api-key>`
+        Application users pass the JWT access token as
+        `Authorization: Bearer <access-token>`. Legacy service integrations
+        may pass the configured API key in the same header.
 
   # -- Reusable parameters ---------------------------------------------------
   parameters:
@@ -669,9 +770,47 @@ components:
       type: object
       properties:
         error:
-          type: string
+          oneOf:
+            - type: string
+            - type: object
+              properties:
+                code: { type: string }
+                message: { type: string }
       example:
-        error: Invalid or missing API key
+        error:
+          code: AUTHENTICATION_REQUIRED
+          message: Authentication is required.
+
+    AuthUser:
+      type: object
+      properties:
+        username: { type: string }
+        display_name: { type: string, nullable: true }
+        email: { type: string, nullable: true }
+        role: { type: string, enum: [administrator, field_operator, read_only] }
+        permissions:
+          type: array
+          items: { type: string }
+
+    LoginResponse:
+      type: object
+      properties:
+        authenticated: { type: boolean }
+        user: { $ref: '#/components/schemas/AuthUser' }
+        access_token: { type: string }
+        refresh_token: { type: string }
+        token_type: { type: string, example: Bearer }
+        expires_in: { type: integer, example: 900 }
+        refresh_expires_in: { type: integer, example: 604800 }
+        expires_at: { type: string, format: date-time }
+        refresh_expires_at: { type: string, format: date-time }
+
+    AuthMeResponse:
+      type: object
+      properties:
+        authenticated: { type: boolean }
+        user: { $ref: '#/components/schemas/AuthUser' }
+        expires_at: { type: string, format: date-time }
 
     Health:
       type: object
@@ -748,7 +887,7 @@ components:
         door_status:       { type: string, maxLength: 20, nullable: true }
         temperature:       { type: number, format: float, nullable: true }
         notes:             { type: string, maxLength: 255, nullable: true }
-        updated_by:        { type: string, maxLength: 50 }
+        updated_by:        { type: string, maxLength: 50, description: Ignored; derived from the authenticated principal. }
         created_at:        { type: string, format: date-time, readOnly: true }
         updated_at:        { type: string, format: date-time, readOnly: true }
       required:
@@ -765,7 +904,7 @@ components:
         door_status:       { type: string, maxLength: 20 }
         temperature:       { type: number, format: float }
         notes:             { type: string, maxLength: 255 }
-        updated_by:        { type: string, maxLength: 50 }
+        updated_by:        { type: string, maxLength: 50, description: Ignored; derived from the authenticated principal. }
       required: [status, trap_id]
 
     TrapUpdate:
@@ -778,8 +917,7 @@ components:
         door_status:       { type: string, maxLength: 20 }
         temperature:       { type: number, format: float }
         notes:             { type: string, maxLength: 255 }
-        updated_by:        { type: string, maxLength: 50 }
-      required: [updated_by]
+        updated_by:        { type: string, maxLength: 50, description: Ignored; derived from the authenticated principal. }
 
     Deployment:
       type: object
@@ -792,7 +930,12 @@ components:
         animal_capture:    { type: string, maxLength: 255, nullable: true }
         photo_url:         { type: string, maxLength: 500, nullable: true }
         photo_filename:    { type: string, maxLength: 255, nullable: true }
-        notes:             { type: string, maxLength: 500, nullable: true }
+        notes:
+          type: array
+          items: { $ref: '#/components/schemas/DeploymentNote' }
+        pictures:
+          type: array
+          items: { $ref: '#/components/schemas/DeploymentPicture' }
         created_at:        { type: string, format: date-time, readOnly: true }
         updated_at:        { type: string, format: date-time, readOnly: true }
 
@@ -809,6 +952,25 @@ components:
       properties:
         animal_capture:    { type: string, maxLength: 255 }
         notes:             { type: string, maxLength: 500 }
+
+    DeploymentNote:
+      type: object
+      properties:
+        id: { type: integer }
+        deployment_id: { type: integer }
+        notes: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    DeploymentPicture:
+      type: object
+      properties:
+        id: { type: integer }
+        deployment_id: { type: integer }
+        photo_url: { type: string }
+        photo_filename: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
 
     DeploymentLocation:
       type: object
@@ -836,13 +998,25 @@ components:
               summary: Invalid limit/offset
               value: { error: "'limit' and 'offset' must be integers" }
     401:
-      description: Missing or invalid API key
+      description: Missing or invalid JWT or service credential
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/Error'
           example:
-            error: Invalid or missing API key
+            error:
+              code: AUTHENTICATION_REQUIRED
+              message: Authentication is required.
+    403:
+      description: Authenticated user lacks the required permission
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: FORBIDDEN
+              message: You do not have permission to perform this action.
     404:
       description: Resource not found
       content:

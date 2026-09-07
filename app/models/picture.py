@@ -1,4 +1,5 @@
 """Trap deployment model — one deployment per active period in the field."""
+import os
 from datetime import datetime, timezone
 
 from app.models.database import db
@@ -25,9 +26,17 @@ class Picture(db.Model):
         return {
             "id": self.id,
             "deployment_id": self.deployment_id,
-            "photo_url": self.photo_url,
+            "photo_url": (
+                f"/api/deployments/{self.deployment_id}/photos/{self.id}"
+                if self.id is not None
+                else None
+            ),
             "photo_filename": self.photo_filename,
             "created_at": format_app_datetime(self.created_at),
             "updated_at": format_app_datetime(self.updated_at),
         }
 
+    @property
+    def stored_filename(self):
+        """Return only the generated filename used by the file store."""
+        return os.path.basename(self.photo_url or "")

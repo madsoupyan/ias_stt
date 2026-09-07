@@ -1,18 +1,63 @@
-"""API key authentication.
-
-A single shared API key (``API_KEY`` in the environment) protects the ``/api/*``
-endpoints. Clients authenticate with an ``Authorization: Bearer <key>`` header.
-
-If ``API_KEY`` is not configured the decorator passes requests through (auth is
-effectively disabled) and a warning is logged at startup, so an administrator can
-set the key later without the app refusing to start.
-"""
+"""JWT authentication, legacy service-key compatibility, and permissions."""
 import hmac
+import secrets
 from functools import wraps
 
-from flask import current_app, jsonify, request
+from flask import current_app, g, jsonify, request
+from flask_jwt_extended import (
+    JWTManager,
+    get_jwt,
+    get_jwt_identity,
+    verify_jwt_in_request,
+)
+from flask_jwt_extended.exceptions import JWTExtendedException
 
-UNAUTHORIZED = ({"error": "Invalid or missing API key"}, 401)
+
+ROLE_PERMISSIONS = {
+    "administrator": {
+        "traps:read",
+        "trap_details:read",
+        "traps:create",
+        "traps:update",
+        "traps:delete",
+        "trackers:read",
+        "trackers:unassigned:read",
+        "trackers:manage",
+        "deployments:read",
+        "deployments:create",
+        "deployments:update",
+        "deployments:delete",
+        "deployment_photos:create",
+        "uplinks:read",
+        "settings:admin",
+    },
+    "field_operator": {
+        "traps:read",
+        "trackers:unassigned:read",
+        "deployments:read",
+        "traps:update",
+        "deployments:update",
+        "deployment_photos:create",
+    },
+    "read_only": {
+        "traps:read",
+        "trap_details:read",
+        "trackers:read",
+        "trackers:unassigned:read",
+        "deployments:read",
+        "uplinks:read",
+    },
+}
+
+VALID_ROLES = tuple(ROLE_PERMISSIONS)
+
+
+def auth_error(code, message, status):
+    return jsonify({"error": {"code": code, "message": message}}), status
+
+
+def permissions_for_role(role):
+    return sorted(ROLE_PERMISSIONS.get(role, set()))
 
 
 def _extract_bearer_token():
@@ -23,36 +68,193 @@ def _extract_bearer_token():
     return None
 
 
-def is_valid_key(provided):
-    """Constant-time comparison against the configured API key."""
+def _service_principal(token):
     configured = current_app.config.get("API_KEY")
-    if not configured or not provided:
-        return False
-    return hmac.compare_digest(str(provided), str(configured))
+    if not configured or not token:
+        return None
+    if not hmac.compare_digest(str(token), str(configured)):
+        return None
+    permissions = current_app.config.get("API_KEY_PERMISSIONS", ["*"])
+    return {
+        "type": "service",
+        "username": "service-api",
+        "role": None,
+        "permissions": permissions,
+    }
 
 
-def require_api_key(view):
-    """Decorator: require a valid Bearer API key, unless no key is configured."""
+def _verify_jwt(refresh=False):
+    try:
+        verify_jwt_in_request(refresh=refresh)
+    except JWTExtendedException:
+        return None, auth_error(
+            "INVALID_TOKEN",
+            "The authentication token is invalid or expired.",
+            401,
+        )
+    except Exception:
+        current_app.logger.exception("JWT validation failed")
+        return None, auth_error(
+            "INVALID_TOKEN",
+            "The authentication token is invalid or expired.",
+            401,
+        )
+
+    claims = get_jwt()
+    identity = get_jwt_identity()
+    role = claims.get("role")
+    if not identity or role not in ROLE_PERMISSIONS:
+        return None, auth_error(
+            "INVALID_TOKEN",
+            "The authentication token is invalid or expired.",
+            401,
+        )
+
+    return {
+        "type": "user",
+        "username": str(identity),
+        "role": role,
+        "permissions": permissions_for_role(role),
+        "display_name": claims.get("display_name"),
+        "email": claims.get("email"),
+        "claims": claims,
+    }, None
+
+
+def _authenticate_request(allow_service=True):
+    token = _extract_bearer_token()
+    if allow_service:
+        service = _service_principal(token)
+        if service is not None:
+            g.auth_principal = service
+            return service, None
+
+    if not token:
+        if request.headers.get("Authorization"):
+            return None, auth_error(
+                "INVALID_TOKEN",
+                "The authentication token is invalid or expired.",
+                401,
+            )
+        return None, auth_error(
+            "AUTHENTICATION_REQUIRED",
+            "Authentication is required.",
+            401,
+        )
+
+    principal, error = _verify_jwt()
+    if error is not None:
+        return None, error
+    g.auth_principal = principal
+    return principal, None
+
+
+def require_auth(view):
+    """Require a JWT user or an explicitly configured legacy service key."""
 
     @wraps(view)
     def wrapper(*args, **kwargs):
-        # Pass-through when no key is configured (auth disabled).
-        if not current_app.config.get("API_KEY"):
-            return view(*args, **kwargs)
-        token = _extract_bearer_token()
-        if not is_valid_key(token):
-            return jsonify(UNAUTHORIZED[0]), UNAUTHORIZED[1]
+        _, error = _authenticate_request()
+        if error is not None:
+            return error
         return view(*args, **kwargs)
 
     return wrapper
 
 
+def require_jwt(view):
+    """Require a user JWT, excluding the legacy service-key path."""
+
+    @wraps(view)
+    def wrapper(*args, **kwargs):
+        _, error = _authenticate_request(allow_service=False)
+        if error is not None:
+            return error
+        return view(*args, **kwargs)
+
+    return wrapper
+
+
+def require_refresh_jwt(view):
+    """Require a valid refresh JWT."""
+
+    @wraps(view)
+    def wrapper(*args, **kwargs):
+        if not _extract_bearer_token():
+            return auth_error(
+                "AUTHENTICATION_REQUIRED",
+                "Authentication is required.",
+                401,
+            )
+        principal, error = _verify_jwt(refresh=True)
+        if error is not None:
+            return error
+        g.auth_principal = principal
+        return view(*args, **kwargs)
+
+    return wrapper
+
+
+def require_permission(permission):
+    """Require a user permission, or a legacy service key with that scope."""
+
+    def decorator(view):
+        @wraps(view)
+        def wrapper(*args, **kwargs):
+            principal, error = _authenticate_request()
+            if error is not None:
+                return error
+            allowed = principal["permissions"]
+            if "*" not in allowed and permission not in allowed:
+                return auth_error(
+                    "FORBIDDEN",
+                    "You do not have permission to perform this action.",
+                    403,
+                )
+            return view(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
+def require_api_key(view):
+    """Require the legacy API key for service-only endpoints."""
+
+    @wraps(view)
+    def wrapper(*args, **kwargs):
+        principal = _service_principal(_extract_bearer_token())
+        if principal is None:
+            return auth_error(
+                "AUTHENTICATION_REQUIRED",
+                "A valid service API key is required.",
+                401,
+            )
+        g.auth_principal = principal
+        return view(*args, **kwargs)
+
+    return wrapper
+
+
+def current_actor():
+    principal = getattr(g, "auth_principal", None)
+    if not principal:
+        return "system"
+    return principal.get("username") or "system"
+
+
 def init_auth(app):
-    """Log a startup warning when authentication is not configured."""
-    if not app.config.get("API_KEY"):
-        app.logger.warning(
-            "API_KEY not set; API authentication is DISABLED. "
-            "Set API_KEY in the environment to secure /api/* endpoints."
-        )
-    else:
-        app.logger.info("API key authentication enabled for /api/* endpoints")
+    """Configure Flask-JWT-Extended and require a stable signing secret."""
+    if not app.config.get("JWT_SECRET_KEY"):
+        if app.config.get("TESTING") or app.config.get("DEBUG"):
+            app.config["JWT_SECRET_KEY"] = secrets.token_urlsafe(32)
+            app.logger.warning(
+                "JWT_SECRET_KEY is not configured; using an ephemeral development key"
+            )
+        else:
+            raise RuntimeError("JWT_SECRET_KEY must be configured in production")
+
+    JWTManager(app)
+
+    if app.config.get("API_KEY"):
+        app.logger.info("Legacy service API-key authentication enabled")

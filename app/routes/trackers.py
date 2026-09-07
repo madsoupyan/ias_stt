@@ -5,7 +5,7 @@ from flask import Blueprint, current_app, jsonify, request
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from app.auth import require_api_key
+from app.auth import require_permission
 from app.models.database import db
 from app.models.smart_trap_tracker import SmartTrapTracker
 from app.models.trap import Trap
@@ -104,7 +104,7 @@ def _apply_fields(tracker, data):
 
 
 @trackers_bp.route("", methods=["GET"])
-@require_api_key
+@require_permission("trackers:read")
 def list_trackers():
     limit, offset, error = _get_pagination()
     if error:
@@ -122,7 +122,7 @@ def list_trackers():
 
 
 @trackers_bp.route("/unassigned", methods=["GET"])
-@require_api_key
+@require_permission("trackers:unassigned:read")
 def list_unassigned_trackers():
     limit, offset, error = _get_pagination()
     if error:
@@ -145,7 +145,7 @@ def list_unassigned_trackers():
 
 
 @trackers_bp.route("/<int:tracker_pk>", methods=["GET"])
-@require_api_key
+@require_permission("trackers:read")
 def get_tracker(tracker_pk):
     tracker = db.session.get(SmartTrapTracker, tracker_pk)
     if tracker is None:
@@ -154,7 +154,7 @@ def get_tracker(tracker_pk):
 
 
 @trackers_bp.route("", methods=["POST"])
-@require_api_key
+@require_permission("trackers:manage")
 def create_tracker():
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
@@ -190,7 +190,7 @@ def create_tracker():
 
 
 @trackers_bp.route("/<int:tracker_pk>", methods=["PUT"])
-@require_api_key
+@require_permission("trackers:manage")
 def update_tracker(tracker_pk):
     tracker = db.session.get(SmartTrapTracker, tracker_pk)
     if tracker is None:
@@ -236,7 +236,7 @@ def update_tracker(tracker_pk):
 
 
 @trackers_bp.route("/<int:tracker_pk>", methods=["DELETE"])
-@require_api_key
+@require_permission("trackers:manage")
 def delete_tracker(tracker_pk):
     tracker = db.session.get(SmartTrapTracker, tracker_pk)
     if tracker is None:
@@ -252,7 +252,7 @@ def delete_tracker(tracker_pk):
 
 
 @trackers_bp.route("/<int:tracker_pk>/test_tilt_alert", methods=["POST"])
-@require_api_key
+@require_permission("trackers:manage")
 def test_tilt_alert(tracker_pk):
     tracker = db.session.get(SmartTrapTracker, tracker_pk)
     if tracker is None:

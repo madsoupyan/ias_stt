@@ -22,11 +22,14 @@ web UI for managing traps.
   validation and proper status codes.
 - **Web UI** at `/traps` (Jinja2 + Bootstrap) for full CRUD with search, sort,
   pagination, and notifications. Toggle with `ENABLE_FRONTEND`.
-- **API key authentication** — `/api/*` endpoints require an `Authorization:
-  Bearer <API_KEY>` header; the web UI has a `/login` page (key stored in
-  `sessionStorage`). Toggle by setting/clearing `API_KEY`.
-- **Cross-origin API access** — CORS is enabled for all origins and supports
-  JSON requests authenticated with the `Authorization` header.
+- **JWT authentication** — local users authenticate through `/auth/login`, then
+  call protected endpoints with a short-lived JWT access token. A seven-day
+  refresh token is used to obtain new access tokens.
+- **Legacy service authentication** — `API_KEY` remains available for service
+  integrations such as telemetry ingestion and can be scoped with
+  `API_KEY_PERMISSIONS`.
+- **Cross-origin API access** — CORS remains enabled for all origins and supports
+  bearer-token requests through the `Authorization` header.
 
 ## Project structure
 
@@ -35,12 +38,12 @@ web UI for managing traps.
 ├── app/
 │   ├── __init__.py            # app factory: logging, DB, blueprints, MQTT
 │   ├── config.py              # env-based config
-│   ├── auth.py                # API key auth decorator + helpers
+│   ├── auth.py                # JWT auth, permissions, and service-key helpers
 │   ├── routes/
 │   │   ├── api.py             # Hello World (/) + /api/auth/verify
 │   │   ├── traps.py           # CRUD API (/api/traps)
 │   │   ├── uplinks.py         # Uplink history API (/api/uplinks)
-│   │   └── frontend.py        # web UI routes (/traps, /login)
+│   │   └── frontend.py        # legacy web UI routes (/traps, /login)
 │   ├── models/
 │   │   ├── database.py        # shared SQLAlchemy instance
 │   │   ├── trap.py            # Trap model
@@ -92,7 +95,7 @@ An `openapi.yaml` specification is included in the project root covering all
 
 1. Open Bruno → *Collections* → *Import Collection*
 2. Choose **OpenAPI v3** → select `openapi.yaml`
-3. Set the collection-level auth header: `Authorization: Bearer <API_KEY>`
+3. Set the collection-level auth header: `Authorization: Bearer <ACCESS_TOKEN>`
 
 You can also browse it with any OpenAPI viewer (Swagger UI, Redoc, etc.).
 
@@ -108,7 +111,11 @@ Config is read from environment variables (see `.env.example`).
 | `LOG_DIR`          | `logs`        | Rotating log file folder.                    |
 | `APP_TIMEZONE`     | `Asia/Kuala_Lumpur` | Timezone for API timestamps, UI dates, and application logs. |
 | `ENABLE_FRONTEND`  | `true`        | Serve the `/traps` UI; `false` → 404.        |
-| `API_KEY`          | — (unset)     | Secret for `/api/*` + UI login. Unset → auth disabled (warning logged). |
+| `API_KEY`          | — (unset)     | Optional legacy service key for integrations. |
+| `API_KEY_PERMISSIONS` | `*`        | Comma-separated permissions for the legacy service key. |
+| `JWT_SECRET_KEY`   | —             | Stable signing secret; required in production. |
+| `JWT_ACCESS_TOKEN_MINUTES` | `15`    | Access-token lifetime. |
+| `JWT_REFRESH_TOKEN_DAYS` | `7`       | Refresh-token lifetime. |
 | `DATABASE_URL`     | `sqlite:///data/traps.db` | SQLAlchemy database URL.         |
 | `MQTT_ENABLED`     | `false`       | Start the MQTT client (optional; HTTP ingest is the default). |
 | `MQTT_BROKER_HOST` | `localhost`   | MQTT broker host.                            |
@@ -234,9 +241,10 @@ Example:
 curl 'http://localhost:8080/api/stt/unassigned?limit=100&offset=0'
 ```
 
-When `API_KEY` is configured, include an `Authorization: Bearer <API_KEY>`
-header. The endpoint returns `200` with an empty array when every registered
-tracker is assigned or no trackers exist.
+Use a JWT access token in the `Authorization: Bearer <ACCESS_TOKEN>` header.
+Legacy service integrations may use the configured API key. The endpoint
+returns `200` with an empty array when every registered tracker is assigned or
+no trackers exist.
 
 ## Trap configuration API (`/api/traps`)
 
@@ -244,9 +252,9 @@ Trap device configurations are stored in a file-based **SQLite** database
 (`data/traps.db`, created automatically on startup). Override the location with
 the `DATABASE_URL` environment variable.
 
-> **Auth:** when `API_KEY` is set, every `/api/traps` request must include an
-> `Authorization: Bearer <API_KEY>` header (see [Authentication](#authentication)).
-> The examples below omit it for brevity.
+> **Auth:** every `/api/traps` request requires a JWT access token. Legacy
+> service integrations may use the configured API key. The examples below omit
+> authentication headers for brevity.
 
 > SQLite has no native `SERIAL` / `NUMERIC` / `TIMESTAMPTZ`. The ORM uses an
 > autoincrement integer PK, `Decimal` temperatures, and UTC datetimes; the
@@ -264,14 +272,13 @@ the `DATABASE_URL` environment variable.
 | `door_status` | string(20)     | optional                          | e.g. `open`, `closed`; typically set by sensors.       |
 | `temperature` | numeric(5,2)   | optional                          | Numeric; serialized as a JSON number.                  |
 | `notes`       | string(255)    | optional                          | Free-text.                                             |
-| `updated_by`  | string(50)     | defaults to `system`              | Who made the change (see below). Required on `PUT`.    |
+| `updated_by`  | string(50)     | defaults to `system`              | Actor derived by the backend for authenticated changes. |
 | `created_at`  | datetime (UTC) | read-only                         | ISO-8601; set on creation.                             |
 | `updated_at`  | datetime (UTC) | read-only, auto-updated           | ISO-8601; bumped on every change.                      |
 
-**`updated_by` semantics:** this column records the source of a change — a
-manual API call should pass the user making it (e.g. `"alice"`), while automated
-sensor updates use the default `"system"`. Useful for auditing/debugging when
-sensors update `door_status` or `location`.
+**`updated_by` semantics:** this column records the authenticated actor for
+manual API changes. The backend ignores a client-provided `updated_by` value.
+Automated sensor updates use the default `"system"`.
 
 ### Endpoints
 
@@ -280,7 +287,7 @@ sensors update `door_status` or `location`.
 | GET    | `/api/traps`      | List traps. Query: `limit` (default 100), `offset` (default 0), `status` filter. |
 | GET    | `/api/traps/<id>` | Get a single trap by numeric `id`.                  |
 | POST   | `/api/traps`      | Create a trap. Requires `status`, `trap_id`. |
-| PUT    | `/api/traps/<id>` | Update a trap. Requires `updated_by` in the body.   |
+| PUT    | `/api/traps/<id>` | Update a trap. The backend derives `updated_by`. |
 | DELETE | `/api/traps/<id>` | Delete a trap.                                       |
 
 ### Status codes
@@ -289,7 +296,7 @@ sensors update `door_status` or `location`.
 | ----- | ------------------------------------------------------------------- |
 | `200` | Success (GET, PUT, DELETE).                                          |
 | `201` | Created (POST).                                                     |
-| `400` | Bad request — missing required field, invalid type, non-integer `limit`/`offset`, or missing `updated_by` on update. |
+| `400` | Bad request — missing required field, invalid type, or non-integer `limit`/`offset`. |
 | `404` | Trap not found.                                                     |
 | `409` | Conflict — `trap_id` already exists.                                |
 | `500` | Internal server error.                                              |
@@ -300,8 +307,8 @@ Error responses are JSON of the form `{"error": "<message>"}`.
 
 - `status`, `trap_id` are required on create (`400` if missing).
 - `trap_id` must be unique (`409` on duplicate, on both create and update).
-- `updated_by` is required on every update (`400` if missing/empty); on create it
-  defaults to `system` when omitted.
+- `updated_by` is ignored when supplied by a client; the backend records the
+  authenticated username or service identity.
 - `temperature` must be numeric (`400` otherwise); string fields must not exceed
   their max length.
 - `limit` and `offset` must be non-negative integers (`400` otherwise).
@@ -317,8 +324,7 @@ curl -X POST http://localhost:8080/api/traps -H 'Content-Type: application/json'
     "trap_id": "TRAP-001",
     "tracker_id": "TRK-001",
     "location": "north",
-    "temperature": 23.5,
-    "updated_by": "alice"
+    "temperature": 23.5
   }'
 ```
 
@@ -334,7 +340,7 @@ Response `201 Created`:
   "door_status": null,
   "temperature": 23.5,
   "notes": null,
-  "updated_by": "alice",
+  "updated_by": "admin",
   "created_at": "2026-06-24T08:39:06.316701",
   "updated_at": "2026-06-24T08:39:06.316705"
 }
@@ -352,12 +358,12 @@ curl 'http://localhost:8080/api/traps?status=active&limit=10&offset=0'
 curl http://localhost:8080/api/traps/1
 ```
 
-**Update** — `PUT /api/traps/1` (`updated_by` required); `updated_at` is bumped
-automatically:
+**Update** — `PUT /api/traps/1`; `updated_at` is bumped automatically and
+`updated_by` is derived from the authenticated user:
 
 ```bash
 curl -X PUT http://localhost:8080/api/traps/1 -H 'Content-Type: application/json' \
-  -d '{"door_status": "open", "updated_by": "alice"}'
+  -d '{"door_status": "open"}'
 ```
 
 **Delete** — `DELETE /api/traps/1`:
@@ -379,7 +385,7 @@ A Jinja2 + Bootstrap single-page interface for managing traps, served at
 - Client-side **search** by Trap ID or Location, server-side **status** filter,
   and **pagination** (page-size selector + Prev/Next).
 - Client-side required-field validation and toast notifications that surface
-  API errors (e.g. duplicate `trap_id`, missing `updated_by`).
+  API errors (e.g. duplicate `trap_id` and invalid field values).
 
 Disable it by setting `ENABLE_FRONTEND=false`, after which `/traps` returns
 `404` while the JSON API at `/api/traps` keeps working.
@@ -390,36 +396,52 @@ Disable it by setting `ENABLE_FRONTEND=false`, after which `/traps` returns
 
 ## Authentication
 
-API key authentication protects all `/api/*` endpoints. Set a secret in the
-environment:
+The API uses local users and stateless JWTs. Create a user with the Flask CLI:
 
 ```
-API_KEY=your-secret-key
+flask --app run.py create-user admin --role administrator
 ```
 
-If `API_KEY` is **unset**, authentication is disabled (the app logs a warning on
-startup and runs normally, so the key can be added later).
+The command prompts for a password. User passwords are stored as hashes in the
+local SQLite database. Set a stable JWT signing secret before running in
+production:
 
-**Calling the API** — include the key as a Bearer token:
+```
+JWT_SECRET_KEY=long-random-signing-secret
+JWT_ACCESS_TOKEN_MINUTES=15
+JWT_REFRESH_TOKEN_DAYS=7
+```
+
+**Login** — send local credentials to `/auth/login`:
 
 ```bash
-curl http://localhost:8080/api/traps -H "Authorization: Bearer your-secret-key"
+curl -X POST http://localhost:8080/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"your-password"}'
 ```
 
-A missing or invalid key returns `401`:
+The response contains an access token and refresh token. Include the access
+token on protected requests:
 
-```json
-{ "error": "Invalid or missing API key" }
+```bash
+curl http://localhost:8080/api/traps \
+  -H "Authorization: Bearer <ACCESS_TOKEN>"
 ```
 
-**Web UI login** — visiting `/traps` without a key in `sessionStorage` redirects
-to `/login`. The login page verifies the key against `GET /api/auth/verify`,
-stores it in `sessionStorage` (not persisted across browser sessions), and sends
-it on every API call. Any `401` response clears the stored key and returns the
-user to `/login`. A **Logout** button clears the key.
+When the access token expires, request a replacement with the refresh token:
 
-**Public (no auth required):** `/` (Hello World), `/login`, `/static/*`, and the
-`/traps` HTML page (its data is protected at the API layer).
+```bash
+curl -X POST http://localhost:8080/auth/refresh \
+  -H "Authorization: Bearer <REFRESH_TOKEN>"
+```
+
+`GET /auth/me` returns the identity, role, permissions, and access-token
+expiration. `POST /auth/logout` returns `204`; because JWTs are stateless, the
+client must discard both tokens.
+
+**Public (no auth required):** `/`, `/api/health`, `/auth/login`, and
+`/auth/logout`. Protected API requests require a valid JWT unless they use the
+explicitly configured legacy service API key.
 
 ## Security
 
@@ -434,16 +456,17 @@ hardcoded anywhere in the source.
   raw payloads). After `git init`, run `git status` and confirm `.env`, `logs/`,
   and `data/` are **not** staged before your first commit.
 
-**API key**
+**JWT and service credentials**
 
-- Generate a strong key and set it as `API_KEY`:
+- Generate a strong JWT secret and set it as `JWT_SECRET_KEY`:
 
   ```bash
   python -c "import secrets; print(secrets.token_urlsafe(32))"
   ```
 
-- If `API_KEY` is unset, authentication is **disabled** (a warning is logged) —
-  always set it outside local development.
+- `API_KEY` is optional and should only be used for non-browser integrations.
+- JWTs are sent in the `Authorization` header, so wildcard CORS does not require
+  credentialed requests or browser cookies.
 
 **Production hardening**
 
@@ -457,10 +480,10 @@ hardcoded anywhere in the source.
 
 **Recommended (not yet implemented)**
 
-- Rate limiting on `/api/*`, especially `/api/auth/verify`, to deter API-key
-  brute forcing (e.g. `flask-limiter`).
+- Rate limiting on `/auth/login` to deter password brute forcing (e.g.
+  `flask-limiter`).
 - Security headers (e.g. `flask-talisman` or at the proxy). CORS is intentionally
-  enabled for all origins; keep `API_KEY` configured outside local development.
+  enabled for all origins; keep `JWT_SECRET_KEY` configured outside local development.
 - Run a dependency vulnerability scan before each release: `pip-audit`.
 
 ## Docker deployment
@@ -472,7 +495,7 @@ for production-style deployment.
 
 ```bash
 # Ensure a .env file exists (copy from the example if you haven't already)
-cp .env.example .env    # then edit with your broker, API key, etc.
+cp .env.example .env    # then edit with your JWT secret and broker settings
 
 docker-compose build
 docker-compose up -d
@@ -504,7 +527,8 @@ docker-compose up -d --build    # rebuild and restart
 **Production notes**
 
 - `FLASK_ENV` is set to `production` → debug/reloader are **off**.
-- Set a strong `API_KEY` and real MQTT broker details in your `.env`.
+- Set a strong `JWT_SECRET_KEY`, create at least one local user, and configure
+  real MQTT broker details in your `.env`.
 - The `.env` file must contain at least the variables listed in
   [Configuration](#configuration) — the app will warn but start gracefully for
   optional values (e.g. missing MQTT broker).
@@ -512,7 +536,7 @@ docker-compose up -d --build    # rebuild and restart
 ## Roadmap
 
 - **Done:** Flask scaffolding, MQTT monitoring, SQLite trap CRUD API, web UI,
-  API key authentication.
+  local-user JWT authentication, and permission enforcement.
 - **Next:** PostgreSQL storage, data-processing layer, Grafana metrics endpoints.
 
 ## Troubleshooting: wildcard subscriptions

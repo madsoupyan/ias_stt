@@ -3,7 +3,7 @@ import logging
 import os
 from logging.handlers import RotatingFileHandler
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 
 from app.config import Config
@@ -31,6 +31,8 @@ def _configure_logging(app: Flask) -> None:
     console_handler.setFormatter(log_format)
     console_handler.setLevel(level)
 
+    for handler in app.logger.handlers:
+        handler.close()
     app.logger.handlers.clear()
     app.logger.addHandler(file_handler)
     app.logger.addHandler(console_handler)
@@ -47,6 +49,12 @@ def _register_error_handlers(app: Flask) -> None:
         app.logger.exception("Internal server error")
         return jsonify({"error": "Internal Server Error"}), 500
 
+    @app.before_request
+    def block_public_upload_paths():
+        # Uploaded images are served through an authenticated deployment route.
+        if request.path.startswith("/static/uploads/"):
+            return jsonify({"error": "Not Found"}), 404
+
 
 def create_app(config_class: type = Config) -> Flask:
     """Application factory."""
@@ -56,7 +64,8 @@ def create_app(config_class: type = Config) -> Flask:
         app,
         origins="*",
         send_wildcard=True,
-        allow_headers=["Content-Type", "Authorization"],
+        allow_headers=["Accept", "Content-Type", "Authorization"],
+        supports_credentials=False,
         methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     )
 
@@ -85,10 +94,12 @@ def create_app(config_class: type = Config) -> Flask:
         from app.models.server_configuration import server_configuration  # noqa: F401  (register model)
         from app.models.picture import Picture    # noqa: F401  (register model)
         from app.models.notes import Notes    # noqa: F401  (register model)
+        from app.models.user import User  # noqa: F401  (register model)
 
         db.create_all()
 
     from app.routes.api import api_bp
+    from app.routes.auth import auth_bp
     from app.routes.traps import traps_bp
     from app.routes.deployments import deployments_bp
     from app.routes.trackers import trackers_bp
@@ -98,6 +109,7 @@ def create_app(config_class: type = Config) -> Flask:
     from app.routes.notes import note_bp
 
     app.register_blueprint(api_bp)
+    app.register_blueprint(auth_bp)
     app.register_blueprint(traps_bp)
     app.register_blueprint(deployments_bp)
     app.register_blueprint(trackers_bp)
@@ -115,6 +127,10 @@ def create_app(config_class: type = Config) -> Flask:
         app.logger.info("Frontend UI disabled (ENABLE_FRONTEND=false)")
 
     app.logger.info("Flask application initialized")
+
+    from app.cli import register_cli
+
+    register_cli(app)
 
     from app.services.mqtt_service import init_mqtt
 

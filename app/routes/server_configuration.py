@@ -3,7 +3,7 @@ from decimal import Decimal
 
 from flask import Blueprint, current_app, jsonify, request
 
-from app.auth import require_api_key
+from app.auth import require_permission
 from app.models.database import db
 from app.models.server_configuration import server_configuration
 from app.time_utils import format_app_datetime
@@ -11,7 +11,7 @@ from app.time_utils import format_app_datetime
 server_configuration_bp = Blueprint("server_configuration", __name__, url_prefix="/api/server_configuration")
 
 @server_configuration_bp.route("", methods=["POST"])
-@require_api_key
+@require_permission("settings:admin")
 def create_server_configuration():
     current_app.logger.info("Redirecting to /server_configuration")
 
@@ -89,7 +89,7 @@ def create_server_configuration():
 
 
 @server_configuration_bp.route("", methods=["GET"])
-@require_api_key
+@require_permission("settings:admin")
 def get_server_configuration():
     # Query ALL server configuration entries currently saved in the database
     all_server_configuration = server_configuration.query.all()

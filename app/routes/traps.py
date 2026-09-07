@@ -4,7 +4,7 @@ from decimal import Decimal, InvalidOperation
 from flask import Blueprint, current_app, jsonify, request
 from sqlalchemy.exc import IntegrityError
 
-from app.auth import require_api_key
+from app.auth import current_actor, require_permission
 from app.models.database import db
 from app.models.trap import Trap
 from app.services import deployment_service
@@ -80,7 +80,7 @@ def _apply_fields(trap, data):
 
 
 @traps_bp.route("", methods=["GET"])
-@require_api_key
+@require_permission("traps:read")
 def list_traps():
     try:
         limit = int(request.args.get("limit", 100))
@@ -100,7 +100,7 @@ def list_traps():
 
 
 @traps_bp.route("/<int:trap_pk>", methods=["GET"])
-@require_api_key
+@require_permission("trap_details:read")
 def get_trap(trap_pk):
     trap = db.session.get(Trap, trap_pk)
     if trap is None:
@@ -109,7 +109,7 @@ def get_trap(trap_pk):
 
 
 @traps_bp.route("", methods=["POST"])
-@require_api_key
+@require_permission("traps:create")
 def create_trap():
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
@@ -122,14 +122,15 @@ def create_trap():
     if Trap.query.filter_by(trap_id=data["trap_id"]).first() is not None:
         return _error(f"trap_id '{data['trap_id']}' already exists", 409)
 
+    data = dict(data)
+    data.pop("updated_by", None)
     trap = Trap()
     err = _apply_fields(trap, data)
     if err:
         return _error(err, 400)
     if not trap.tracker_id:
         trap.tracker_id = ""
-    if not trap.updated_by:
-        trap.updated_by = "system"
+    trap.updated_by = current_actor()
 
     try:
         db.session.add(trap)
@@ -146,7 +147,7 @@ def create_trap():
 
 
 @traps_bp.route("/<int:trap_pk>", methods=["PUT"])
-@require_api_key
+@require_permission("traps:update")
 def update_trap(trap_pk):
     trap = db.session.get(Trap, trap_pk)
     if trap is None:
@@ -160,15 +161,14 @@ def update_trap(trap_pk):
         "PUT /api/traps/%s received (%d field(s))", trap_pk, len(data)
     )
 
-    if not data.get("updated_by"):
-        return _error("Field 'updated_by' is required on update", 400)
-
     new_trap_id = data.get("trap_id")
     if new_trap_id and new_trap_id != trap.trap_id:
         exists = Trap.query.filter_by(trap_id=new_trap_id).first()
         if exists is not None:
             return _error(f"trap_id '{new_trap_id}' already exists", 409)
 
+    data = dict(data)
+    data.pop("updated_by", None)
     previous_status = trap.status
     previous_location = trap.location
 
@@ -178,6 +178,7 @@ def update_trap(trap_pk):
 
     if not trap.tracker_id:
         trap.tracker_id = ""
+    trap.updated_by = current_actor()
 
     if previous_status != trap.status:
         if previous_status == "inactive" and trap.status == "active":
@@ -206,7 +207,7 @@ def update_trap(trap_pk):
 
 
 @traps_bp.route("/<int:trap_pk>", methods=["DELETE"])
-@require_api_key
+@require_permission("traps:delete")
 def delete_trap(trap_pk):
     trap = db.session.get(Trap, trap_pk)
     if trap is None:
