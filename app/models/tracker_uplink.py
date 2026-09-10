@@ -22,6 +22,7 @@ class TrackerUplink(db.Model):
     latitude = db.Column(db.Numeric(8, 5))
     longitude = db.Column(db.Numeric(8, 5))
     tilt_status = db.Column(db.String(50))
+    tamper_status = db.Column(db.String(50))
     battery = db.Column(db.Integer)
     raw_payload = db.Column(db.Text, nullable=False)
 
@@ -45,6 +46,7 @@ class TrackerUplink(db.Model):
             "longitude": float(self.longitude)
             if self.longitude is not None
             else None,
+            "tamper_status": self.tamper_status,
             "tilt_status": self.tilt_status,
             "battery": self.battery,
         }

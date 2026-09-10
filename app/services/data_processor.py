@@ -16,6 +16,7 @@ FIELD_MAP = {
     "longitude": "longitude",
     "position": "tilt_status",
     "battery": "battery",
+    "tamper_status": "tamper_status",
 }
 
 
@@ -242,6 +243,11 @@ def _parse_sensor_updates(data):
                 value = float(value)
             except (ValueError, TypeError):
                 continue
+        elif column == "tamper_status":
+            try:
+                value = string(value)
+            except (ValueError, TypeError):
+                continue
         updates[column] = value
     return updates
 
@@ -257,6 +263,7 @@ def _store_uplink(data, dev_eui, topic, payload, source):
         latitude=updates.get("latitude"),
         longitude=updates.get("longitude"),
         tilt_status=updates.get("tilt_status"),
+        tamper_status=updates.get("tamper_status"),
         battery=updates.get("battery"),
         raw_payload=raw_payload,
     )

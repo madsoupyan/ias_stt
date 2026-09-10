@@ -99,17 +99,15 @@ def list_traps():
     return jsonify([t.to_dict() for t in traps]), 200
 
 
-<<<<<<< HEAD
 @traps_bp.route("/<int:trap_pk>", methods=["GET"])
 @require_permission("trap_details:read")
 def get_trap(trap_pk):
     trap = db.session.get(Trap, trap_pk)
-=======
+
 @traps_bp.route("/<string:trap_id>", methods=["PUT"])
-@require_api_key
+@require_permission("traps:update")
 def update_trap_by_id(trap_id):
     trap = db.session.scalars(db.select(Trap).where(Trap.trap_id == '{trap_id}'))
->>>>>>> PPJSTT-7: Add a QR code reader page & /traps/<trap_id> page, added 4 files, added an api endpoint, edited the image viewer to be enable full screen view on the deployments page.
     if trap is None:
         return _error("Trap not found", 404)
     data = request.get_json(silent=True)
