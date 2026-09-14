@@ -24,6 +24,9 @@ class TrackerUplink(db.Model):
     tilt_status = db.Column(db.String(50))
     tamper_status = db.Column(db.String(50))
     battery = db.Column(db.Integer)
+    tamper_status = db.Column(db.String(50), nullable=True)
+    rssi = db.Column(db.Integer, nullable=True)
+    snr = db.Column(db.Numeric(5, 2), nullable=True)
     raw_payload = db.Column(db.Text, nullable=False)
 
     __table_args__ = (
@@ -42,6 +45,9 @@ class TrackerUplink(db.Model):
             "received_at": format_app_datetime(self.received_at),
             "source": self.source,
             "topic": self.topic,
+            "tamper_status": self.tamper_status,
+            "rssi": self.rssi,
+            "snr": float(self.snr) if self.snr is not None else None,
             "latitude": float(self.latitude) if self.latitude is not None else None,
             "longitude": float(self.longitude)
             if self.longitude is not None
